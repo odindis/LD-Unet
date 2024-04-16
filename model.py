@@ -1,15 +1,10 @@
-from module import ( double_conv, out_conv, uconv, max_pool3d, cat, 
-                     res2_block, res1_block, res1_block_2, scaling_target,
-                     trans_conv, res2_se_block, res2_block_nl, res2_block_2,
-                     res2_cm_block, res2_cm_block_v2
-                   )
-from itertools import product
-from einops import rearrange
 
+from itertools import product
 import torch.nn.functional as F
 import torch.nn as nn
 import module as MD
 import numpy as np
+import einops
 import torch
 
 
@@ -80,19 +75,163 @@ class LD_UNet( nn.Module ):
         
         return self.out_0( x_0_1 ), self.out_1( x_1_1 ), self.out_2( x_2_1 ), \
                self.out_3( x_3_1 ), self.out_4( x_4_1 ), self.out_5( x_5_1 )
+    
 
 
+class res2_block( nn.Module ):
+    def __init__(self, in_channel, out_channel, kernel_size, norm='in', ln_shape=None ):
+        super( res2_block, self).__init__()
+        kernel_size = np.array( kernel_size ).astype( np.int32 )
+        self.is_same = (in_channel == out_channel)
+        if norm == 'bn':
+            nnNorm = nn.BatchNorm3d
+        elif norm == 'in':
+            nnNorm = nn.InstanceNorm3d
+        elif norm == 'ln':
+            nnNorm = nn.LayerNorm
+        else:
+            raise Exception( f'norm={norm}, but there is no such value')
+        ## Conv_0
+        if not self.is_same:
+            self.conv_0 = nn.Conv3d( in_channel, 
+                                     out_channel, 
+                                     kernel_size = kernel_size, 
+                                     padding     = (kernel_size//2).tolist(), 
+                                     stride      = 1,
+                                     bias        = True,
+                                   ) 
+            if norm == 'ln':
+                self.norm_0 = nn.LayerNorm( ln_shape )
+            else:
+                self.norm_0 = nnNorm( out_channel )
+        ## Conv_1
+        self.conv_1 = nn.Conv3d( out_channel, 
+                                 out_channel, 
+                                 kernel_size = kernel_size, 
+                                 padding     = (kernel_size//2).tolist(), 
+                                 stride      = 1,
+                                 bias        = True,
+                               )
+        if norm == 'ln':
+            self.norm_1 = nn.LayerNorm( ln_shape )
+        else:
+            self.norm_1 = nnNorm( out_channel )
+        ## Conv_2
+        self.conv_2 = nn.Conv3d( out_channel, 
+                                 out_channel, 
+                                 kernel_size = kernel_size, 
+                                 padding     = (kernel_size//2).tolist(), 
+                                 stride      = 1,
+                                 bias        = True,
+                               )
+        if norm == 'ln':
+            self.norm_2 = nn.LayerNorm( ln_shape )
+        else:
+            self.norm_2 = nnNorm( out_channel )
+        ## Non_line
+        self.non_line = nn.LeakyReLU( inplace=True )
+        
+    def forward( self, x ):
+        if not self.is_same:
+            x = self.non_line( self.norm_0( self.conv_0( x ) ) )
+        x_1 = self.non_line( self.norm_1( self.conv_1( x ) ) )
+        x_2 = self.conv_2( x_1 )
+        return self.non_line( torch.add( self.norm_2( x_2 ), x ) )
+    
+class res2_cm_block_v2( nn.Module ):
+    def __init__(self, in_channel, out_channel, kernel_size, shape ):
+        super( res2_cm_block_v2, self).__init__()
+        kernel_size = np.array( kernel_size ).astype( np.int32 )
+        self.is_same = (in_channel == out_channel)
+        ## Conv_0
+        if not self.is_same:
+            self.conv_0 = nn.Conv3d( in_channel, 
+                                     out_channel, 
+                                     kernel_size = kernel_size, 
+                                     padding     = (kernel_size//2).tolist(), 
+                                     stride      = 1,
+                                     bias        = True,
+                                   ) 
+            #self.norm_0 = nn.BatchNorm3d( out_channel )
+            self.norm_0 = nn.InstanceNorm3d( out_channel )
+        ## Conv_1
+        self.conv_1 = nn.Conv3d( out_channel, 
+                                 out_channel, 
+                                 kernel_size = kernel_size, 
+                                 padding     = (kernel_size//2).tolist(), 
+                                 stride      = 1,
+                                 bias        = True,
+                               )
+        #self.norm_1 = nn.BatchNorm3d( out_channel )
+        self.norm_1 = nn.InstanceNorm3d( out_channel )
+        ## FFN_1
+        hidden_size = np.prod( shape )
+        self.FFN_1 = nn.Linear( hidden_size, hidden_size, bias=True )
+        self.norm_2 = nn.LayerNorm( hidden_size )
+        ## FFN_2
+        self.FFN_2 = nn.Linear( hidden_size, hidden_size, bias=True )
+        self.norm_3 = nn.LayerNorm( hidden_size )
+        ## Non_line
+        self.non_line = nn.LeakyReLU( inplace=True )
+        
+    def forward( self, x ):
+        if not self.is_same:
+            x = self.non_line( self.norm_0( self.conv_0( x ) ) )
+        #
+        x_1 = self.non_line( self.norm_1( self.conv_1( x ) ) )
+        #
+        h, l, w = x_1.shape[2:]
+        x_1 = einops.rearrange( x_1, 'b c h l w -> b c (h l w) ' )
+        x_1 = self.norm_2( self.FFN_1( x_1 ) )
+        x_2 = self.norm_3( self.FFN_2( x_1 ) )
+        x_2 = einops.rearrange( x_2, 'b c (h l w) -> b c h l w ',  h=h, l=l, w=w )
+        #
+        # theta_x = einops.rearrange( x1, 'b c h l w -> b (h l w) c ' )
+        # torch.einsum('ijk,ikl->ijl', [ theta_x, phi_x ] )
 
+        return self.non_line( torch.add( x_2, x ) )
 
+class uconv( nn.Module ):
+    def __init__( self, in_channel, out_channel, kernel_size ):
+        super( uconv, self).__init__()
+        
+        self.conv_1 = nn.ConvTranspose3d( in_channel,
+                                          out_channel, 
+                                          kernel_size = kernel_size, 
+                                          stride      = kernel_size
+                                        )        
+                    
+    def forward( self, x ):
+        return self.conv_1( x )
 
+class out_conv( nn.Module ):
+    def __init__( self, in_channel, out_channel,  ):
+        super( out_conv, self ).__init__()    
+        self.conv_1 = nn.Conv3d( in_channel, 
+                                 out_channel, 
+                                 kernel_size = 1, 
+                                 stride      = 1, 
+                                 padding     = 0, 
+                                 bias        = False
+                               )
+    def forward( self, x ):
+        return self.conv_1( x )
 
+def max_pool3d( x, kernel ):
+    return F.max_pool3d( x, kernel, kernel )
 
+def cat( x, y ):
+    return torch.cat( [ x, y ], dim=1 )
 
-
-
-
-
-
+if __name__ == '__main__':
+    model = LD_UNet( 1, 2 )
+    x = torch.randn( 1, 1, 1, 256, 256 )
+    y = model( x )
+    for i in y:
+        print( i.shape )
+    print( model )
+    
+    print('Done')
 
 
 
