@@ -286,6 +286,11 @@ def cat( x, y ):
     return torch.cat( [ x, y ], dim=1 )
 
 if __name__ == '__main__':
+    
+    # This is a 2D demo. If you need to use a 3D demo, you'll need to modify 
+    # the operators in the model to be 3D as well, rather than just converting 
+    # the input data to 3D.
+    
     model = LD_UNet( 1, 2 )
     x = torch.randn( 1, 1, 1, 256, 256 )
     y = model( x )
