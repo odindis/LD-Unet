@@ -32,10 +32,10 @@ class LD_UNet( nn.Module ):
         self.block_6_0 = res2_cm_block_v2( mc  , mc  , [1,3,3], [1,4,4] ) # 4
   
         ## Decoder
-        self.block_0_1 = MD.res2_block_4( bc*2    , bc  , [1,3,3], [1,13,13], groups_2=16 )
-        self.block_1_1 = MD.res2_block_4( bc*4    , bc*2, [1,3,3], [1,11,11], groups_2= 8 )
-        self.block_2_1 = MD.res2_block_4( bc*8    , bc*4, [1,3,3], [1, 9, 9], groups_2= 4 )
-        self.block_3_1 = MD.res2_block_4( bc*16   , bc*8, [1,3,3], [1, 7, 7], groups_2= 2 )
+        self.block_0_1 = res2_block_4( bc*2    , bc  , [1,3,3], [1,13,13], groups_2=16 )
+        self.block_1_1 = res2_block_4( bc*4    , bc*2, [1,3,3], [1,11,11], groups_2= 8 )
+        self.block_2_1 = res2_block_4( bc*8    , bc*4, [1,3,3], [1, 9, 9], groups_2= 4 )
+        self.block_3_1 = res2_block_4( bc*16   , bc*8, [1,3,3], [1, 7, 7], groups_2= 2 )
         self.block_4_1 = res2_cm_block_v2( mc+mc   , mc  , [1,3,3], [1,16,16] )
         self.block_5_1 = res2_cm_block_v2( mc+mc   , mc  , [1,3,3], [1, 8, 8] )
         
@@ -75,9 +75,71 @@ class LD_UNet( nn.Module ):
         
         return self.out_0( x_0_1 ), self.out_1( x_1_1 ), self.out_2( x_2_1 ), \
                self.out_3( x_3_1 ), self.out_4( x_4_1 ), self.out_5( x_5_1 )
-    
 
 
+class res2_block_4( nn.Module ):
+    def __init__(self, in_channel, out_channel, kernel_size_1, kernel_size_2, groups_1=1, groups_2=1, norm='in', ln_shape='None' ):
+        super( res2_block_4, self ).__init__()
+        kernel_size_1 = np.array( kernel_size_1 ).astype( np.int32 )
+        kernel_size_2 = np.array( kernel_size_2 ).astype( np.int32 )
+        self.is_same = (in_channel == out_channel)
+        if norm == 'bn':
+            nnNorm = nn.BatchNorm3d
+        elif norm == 'in':
+            nnNorm = nn.InstanceNorm3d
+        elif norm == 'ln':
+            nnNorm = nn.LayerNorm
+        else:
+            raise Exception( f'norm={norm}, but there is no such value')
+        ## Conv_0
+        if not self.is_same:
+            self.conv_0 = nn.Conv3d( in_channel, 
+                                     out_channel, 
+                                     kernel_size = kernel_size_1, 
+                                     padding     = (kernel_size_1//2).tolist(), 
+                                     stride      = 1,
+                                     bias        = True,
+                                   ) 
+            if norm == 'ln':
+                self.norm_0 = nnNorm( ln_shape )
+            else:
+                self.norm_0 = nnNorm( out_channel )
+        ## Conv_1
+        self.conv_1 = nn.Conv3d( out_channel, 
+                                 out_channel, 
+                                 kernel_size = kernel_size_1, 
+                                 padding     = (kernel_size_1//2).tolist(), 
+                                 stride      = 1,
+                                 bias        = True,
+                                 groups      = groups_1,
+                               )
+        if norm == 'ln':
+            self.norm_1 = nnNorm( ln_shape )
+        else:
+            self.norm_1 = nnNorm( out_channel )
+        ## Conv_2
+        self.conv_2 = nn.Conv3d( out_channel, 
+                                 out_channel, 
+                                 kernel_size = kernel_size_2, 
+                                 padding     = (kernel_size_2//2).tolist(), 
+                                 stride      = 1,
+                                 bias        = True,
+                                 groups     = groups_2,
+                               )
+        if norm == 'ln':
+            self.norm_2 = nnNorm( ln_shape )
+        else:
+            self.norm_2 = nnNorm( out_channel )
+        ## Non_line
+        self.non_line = nn.LeakyReLU( inplace=True )
+        
+    def forward( self, x ):
+        if not self.is_same:
+            x = self.non_line( self.norm_0( self.conv_0( x ) ) )
+        x_1 = self.non_line( self.norm_1( self.conv_1( x   ) ) )
+        x_2 = self.norm_2( self.conv_2( x_1 ) )
+        return self.non_line( torch.add(  x_2, x ) )
+        
 class res2_block( nn.Module ):
     def __init__(self, in_channel, out_channel, kernel_size, norm='in', ln_shape=None ):
         super( res2_block, self).__init__()
