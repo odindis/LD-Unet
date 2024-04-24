@@ -27,9 +27,9 @@ class LD_UNet( nn.Module ):
         self.block_1_0 = res2_block( bc  , bc*2, [1,3,3] ) # 128
         self.block_2_0 = res2_block( bc*2, bc*4, [1,3,3] ) # 64
         self.block_3_0 = res2_block( bc*4, bc*8, [1,3,3] ) # 32
-        self.block_4_0 = res2_cm_block_v2( bc*8, mc  , [1,3,3], [1,16,16] ) # 16
-        self.block_5_0 = res2_cm_block_v2( mc  , mc  , [1,3,3], [1,8,8] ) # 8
-        self.block_6_0 = res2_cm_block_v2( mc  , mc  , [1,3,3], [1,4,4] ) # 4
+        self.block_4_0 = res2_cm_block_v2( bc*8, mc, [1,3,3], [1,16,16] ) # 16
+        self.block_5_0 = res2_cm_block_v2( mc  , mc, [1,3,3], [1,8,8] ) # 8
+        self.block_6_0 = res2_cm_block_v2( mc  , mc, [1,3,3], [1,4,4] ) # 4
   
         ## Decoder
         self.block_0_1 = res2_block_4( bc*2    , bc  , [1,3,3], [1,13,13], groups_2=16 )
@@ -291,7 +291,7 @@ if __name__ == '__main__':
     # the operators in the model to be 3D as well, rather than just converting 
     # the input data to 3D.
     
-    model = LD_UNet( 1, 2 )
+    model = LD_UNet( in_channel=1, out_channel=2 )
     x = torch.randn( 1, 1, 1, 256, 256 )
     y = model( x )
     for i in y:
